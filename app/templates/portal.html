@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ venue.name }} - WiFi Access</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); }
+    </style>
+</head>
+<body class="min-h-screen text-white flex items-center justify-center p-4">
+
+    <div class="w-full max-w-md">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold mb-2">{{ venue.name }}</h1>
+            <p class="text-slate-400">Select a package to get online</p>
+        </div>
+
+        <!-- Packages -->
+        <div id="packages" class="space-y-3 mb-6">
+            {% for package in packages %}
+            <div onclick="selectPackage({{ package.id }}, '{{ package.name }}', {{ package.price }})"
+                 class="package-card cursor-pointer bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl p-4 transition">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="font-semibold text-lg">{{ package.name }}</p>
+                        <p class="text-sm text-slate-400">
+                            {% if package.duration_minutes < 60 %}
+                                {{ package.duration_minutes }} minutes
+                            {% elif package.duration_minutes < 1440 %}
+                                {{ (package.duration_minutes / 60)|int }} hours
+                            {% else %}
+                                {{ (package.duration_minutes / 1440)|int }} day(s)
+                            {% endif %}
+                        </p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-xl font-bold text-emerald-400">KES {{ package.price }}</p>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <!-- Payment Form (hidden until package selected) -->
+        <div id="payment-form" class="hidden bg-slate-800 rounded-xl p-6 border border-slate-600">
+            <p class="text-sm text-slate-400 mb-1">Selected package</p>
+            <p id="selected-name" class="font-semibold text-lg mb-4"></p>
+
+            <label class="block text-sm mb-2">M-Pesa Phone Number</label>
+            <input id="phone" type="tel" placeholder="07XX XXX XXX"
+                   class="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-3 mb-4 focus:outline-none focus:border-emerald-500">
+
+            <button onclick="payNow()" id="pay-btn"
+                    class="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-3 rounded-lg transition">
+                Pay with M-Pesa
+            </button>
+
+            <button onclick="goBack()" class="w-full mt-3 text-slate-400 text-sm hover:text-white">
+                ← Choose different package
+            </button>
+        </div>
+
+        <!-- Status messages -->
+        <div id="status" class="hidden mt-6 text-center"></div>
+    </div>
+
+    <script>
+        const venueId = {{ venue.id }};
+        let selectedPackageId = null;
+        let selectedPrice = null;
+
+        // Get MAC and IP from URL parameters (Mikrotik will send these later)
+        const urlParams = new URLSearchParams(window.location.search);
+        const macAddress = urlParams.get('mac') || null;
+        const ipAddress = urlParams.get('ip') || null;
+
+        function selectPackage(id, name, price) {
+            selectedPackageId = id;
+            selectedPrice = price;
+            document.getElementById('selected-name').innerText = name + " — KES " + price;
+            document.getElementById('packages').classList.add('hidden');
+            document.getElementById('payment-form').classList.remove('hidden');
+            document.getElementById('status').classList.add('hidden');
+        }
+
+        function goBack() {
+            document.getElementById('packages').classList.remove('hidden');
+            document.getElementById('payment-form').classList.add('hidden');
+            document.getElementById('status').classList.add('hidden');
+        }
+
+        async function payNow() {
+            const phone = document.getElementById('phone').value.trim();
+            if (!phone || phone.length < 10) {
+                alert("Please enter a valid M-Pesa number");
+                return;
+            }
+
+            const btn = document.getElementById('pay-btn');
+            btn.disabled = true;
+            btn.innerText = "Sending prompt...";
+
+            try {
+                const response = await fetch('/api/v1/payments/stk-push', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        venue_id: venueId,
+                        package_id: selectedPackageId,
+                        phone_number: phone,
+                        mac_address: macAddress,
+                        ip_address: ipAddress
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.detail || "Failed to initiate payment");
+                }
+
+                // Show waiting message
+                document.getElementById('payment-form').classList.add('hidden');
+                const statusDiv = document.getElementById('status');
+                statusDiv.classList.remove('hidden');
+                statusDiv.innerHTML = `
+                    <div class="bg-slate-800 rounded-xl p-6 border border-emerald-600">
+                        <p class="text-xl font-semibold mb-2">Check your phone</p>
+                        <p class="text-slate-400 mb-4">Enter your M-Pesa PIN to complete payment</p>
+                        <p class="text-sm text-slate-500">Payment ID: ${data.payment_id}</p>
+                        <div class="mt-4">
+                            <div class="animate-pulse text-emerald-400">Waiting for confirmation...</div>
+                        </div>
+                    </div>
+                `;
+
+                // Simple polling to check payment status
+                pollPaymentStatus(data.payment_id);
+
+            } catch (err) {
+                alert("Error: " + err.message);
+                btn.disabled = false;
+                btn.innerText = "Pay with M-Pesa";
+            }
+        }
+
+        async function pollPaymentStatus(paymentId) {
+            const maxAttempts = 40; // ~2 minutes
+            let attempts = 0;
+
+            const interval = setInterval(async () => {
+                attempts++;
+                try {
+                    const res = await fetch(`/api/v1/payments/${paymentId}/status`);
+                    const payment = await res.json();
+
+                    if (payment.status === "success") {
+                        clearInterval(interval);
+                        document.getElementById('status').innerHTML = `
+                            <div class="bg-emerald-900/50 rounded-xl p-6 border border-emerald-500">
+                                <p class="text-2xl font-bold text-emerald-400 mb-2">Payment Successful!</p>
+                                <p class="text-slate-300">You are now connected.</p>
+                                <p class="text-sm text-slate-500 mt-3">Receipt: ${payment.mpesa_receipt_number || 'N/A'}</p>
+                            </div>
+                        `;
+                    } else if (payment.status === "failed") {
+                        clearInterval(interval);
+                        document.getElementById('status').innerHTML = `
+                            <div class="bg-red-900/40 rounded-xl p-6 border border-red-500">
+                                <p class="text-xl font-bold text-red-400 mb-2">Payment Failed</p>
+                                <p class="text-slate-300 mb-4">Please try again</p>
+                                <button onclick="location.reload()" class="bg-slate-700 px-4 py-2 rounded-lg">Try Again</button>
+                            </div>
+                        `;
+                    } else if (attempts >= maxAttempts) {
+                        clearInterval(interval);
+                        document.getElementById('status').innerHTML = `
+                            <div class="bg-yellow-900/40 rounded-xl p-6 border border-yellow-600">
+                                <p class="text-xl font-bold mb-2">Still waiting...</p>
+                                <p class="text-slate-300">If you already paid, wait a moment or refresh.</p>
+                            </div>
+                        `;
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
