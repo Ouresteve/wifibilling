@@ -25,3 +25,4 @@ Thumbs.db
 *.log
 logs/
 tmp/.env
+cloudflared-windows-amd64.exe
