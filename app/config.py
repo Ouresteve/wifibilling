@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     MPESA_PASSKEY: str
     MPESA_CALLBACK_URL: str
     MPESA_ENV: str = "sandbox"
+    RADIUS_SECRET: str
+    RADIUS_PUBLIC_HOST: str
 
     class Config:
         env_file = ".env"
